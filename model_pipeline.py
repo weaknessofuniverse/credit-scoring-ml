@@ -8,17 +8,15 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report, RocCurveDisplay
-from sklearn.pipeline import Pipeline
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import make_pipeline as make_imb_pipeline
+from imblearn.pipeline import Pipeline as ImbPipeline
 import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
 class CreditScoringPipeline:
-    
+
     def __init__(self):
         self.models = {}
         self.feature_names = None
@@ -71,30 +69,25 @@ class CreditScoringPipeline:
                 'param_grid': {
                     'kneighborsclassifier__n_neighbors': [3, 5, 7, 9],
                     'kneighborsclassifier__weights': ['uniform', 'distance'],
-                    'kneighborsclassifier__p': [1, 2]
+                    'kneighborsclassifier__p': [1, 2]  # 1: manhattan, 2: euclidean
                 }
             }
         }
     
-    def create_pipeline(self, model, use_smote=True, scale_features=False):
-        """Create a pipeline with optional SMOTE and feature scaling"""
+    def create_pipeline(self, model, use_smote=True):
+        """Create a pipeline with optional SMOTE"""
         steps = []
-        
-        if scale_features:
-            steps.append(('scaler', StandardScaler()))
             
         if use_smote:
             steps.append(('smote', SMOTE(random_state=42)))
             
-        # Add the model with its name in lowercase
         model_name = type(model).__name__.lower()
         steps.append((model_name, model))
         
-        return Pipeline(steps)
+        return ImbPipeline(steps)
     
     def train_model(self, model_name, X_train, y_train, X_val, y_val, 
-                   use_smote=True, scale_features=False, cv=3, n_jobs=-1, 
-                   search_method='grid'):
+                   use_smote=True, cv=3, n_jobs=-1, search_method='grid'):
         """Train and evaluate a single model"""
         
         available_models = self.get_available_models()
@@ -107,7 +100,7 @@ class CreditScoringPipeline:
         param_grid = model_info['param_grid']
         
         # Create pipeline
-        pipeline = self.create_pipeline(model, use_smote, scale_features)
+        pipeline = self.create_pipeline(model, use_smote)
         
         # Choose search method
         if search_method == 'grid':
@@ -119,7 +112,7 @@ class CreditScoringPipeline:
                 n_jobs=n_jobs,
                 verbose=1
             )
-        else:
+        else:  # randomized search
             search = RandomizedSearchCV(
                 estimator=pipeline,
                 param_distributions=param_grid,
@@ -157,7 +150,7 @@ class CreditScoringPipeline:
         """Display feature importance for tree-based models"""
         
         pipeline = self.models[model_name]['best_estimator']
-        model = pipeline.steps[-1][1]  # Get the actual model from the pipeline
+        model = pipeline.steps[-1][1]
         
         if hasattr(model, 'feature_importances_'):
             # For tree-based models
