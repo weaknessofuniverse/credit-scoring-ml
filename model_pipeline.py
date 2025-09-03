@@ -84,9 +84,9 @@ class CreditScoringPipeline:
         steps.append((model_step_name, model))
         return ImbPipeline(steps)
 
-    def train_model(self, model_name, X_train, y_train, X_val, y_val,
+    def train_model(self, model_name, X_train, y_train,
                     use_smote=True, cv=3, n_jobs=-1, search_method='grid'):
-        """Train and evaluate a single model and store results under a two-level key."""
+        """Train and evaluate a single model on train set (CV only)."""
         available_models = self.get_available_models()
 
         if model_name not in available_models:
@@ -123,10 +123,6 @@ class CreditScoringPipeline:
 
         search.fit(X_train, y_train)
 
-
-        y_val_pred_proba = search.best_estimator_.predict_proba(X_val)[:, 1]
-        val_auc = roc_auc_score(y_val, y_val_pred_proba)
-
         run_key = 'smote' if use_smote else 'no_smote'
         if model_name not in self.models:
             self.models[model_name] = {}
@@ -135,7 +131,6 @@ class CreditScoringPipeline:
             'best_estimator': search.best_estimator_,
             'best_params': search.best_params_,
             'cv_score': search.best_score_,
-            'val_score': val_auc,
             'search': search,
             'metadata': {
                 'use_smote': use_smote
@@ -144,32 +139,21 @@ class CreditScoringPipeline:
 
         print(f"Best parameters: {search.best_params_}")
         print(f"CV AUC: {search.best_score_:.4f}")
-        print(f"Validation AUC: {val_auc:.4f}")
 
         return search.best_estimator_
 
     def feature_importance(self, model_name, use_smote: bool | None = None, top_n=15):
-        """Display feature importance for tree-based models. Choose run by flag or best val_score."""
+        """Display feature importance for tree-based models."""
         if model_name not in self.models:
             raise KeyError(f"No trained runs found for model '{model_name}'.")
 
         runs = self.models[model_name]
-        chosen_key = None
-
         if use_smote is not None:
             chosen_key = 'smote' if use_smote else 'no_smote'
-            if chosen_key not in runs:
-                raise KeyError(f"Run '{chosen_key}' not found for model '{model_name}'. Available: {list(runs.keys())}")
         else:
-            if len(runs) == 1:
-                chosen_key = list(runs.keys())[0]
-            else:
-                best = max(runs.items(), key=lambda kv: kv[1].get('val_score', -np.inf))
-                chosen_key = best[0]
-                print(f"Multiple runs found for '{model_name}', using '{chosen_key}' (best val_score).")
+            chosen_key = list(runs.keys())[0]
 
         pipeline = runs[chosen_key]['best_estimator']
-        # last step is the estimator
         model = pipeline.steps[-1][1]
 
         if hasattr(model, 'feature_importances_'):
