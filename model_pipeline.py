@@ -2,196 +2,197 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, BaggingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report, RocCurveDisplay
 from sklearn.pipeline import Pipeline
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.preprocessing import StandardScaler
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import make_pipeline as make_imb_pipeline
 import joblib
-
-class FeatureSelector(BaseEstimator, TransformerMixin):
-    """Selects specific features from dataframe"""
-    def __init__(self, features):
-        self.features = features
-        
-    def fit(self, X, y=None):
-        return self
-    
-    def transform(self, X):
-        return X[self.features]
+import warnings
+warnings.filterwarnings('ignore')
 
 class CreditScoringPipeline:
     
     def __init__(self):
         self.models = {}
-        self.best_model = None
-        self.best_model_name = None
-        self.results = {}
+        self.feature_names = None
         
-    def define_models(self, use_smote=True):
-        """Define models and their parameter grids"""
-        
-        # Base models
-        models = {
-            'LogisticRegression': LogisticRegression(random_state=42, class_weight='balanced'),
-            'RandomForest': RandomForestClassifier(random_state=42, class_weight='balanced'),
-            'GradientBoosting': GradientBoostingClassifier(random_state=42),
-            'SVM': SVC(probability=True, random_state=42, class_weight='balanced'),
-            'Bagging': BaggingClassifier(random_state=42)
-        }
-        
-        # Parameter grids for tuning
-        param_grids = {
+    def get_available_models(self):
+        """Return a list of available models with their parameter grids"""
+        return {
             'LogisticRegression': {
-                'model__C': [0.1, 1, 10],
-                'model__solver': ['liblinear', 'saga']
+                'model': LogisticRegression(random_state=42, class_weight='balanced'),
+                'param_grid': {
+                    'logisticregression__C': [0.1, 1, 10],
+                    'logisticregression__solver': ['liblinear', 'saga'],
+                    'logisticregression__penalty': ['l1', 'l2']
+                }
             },
             'RandomForest': {
-                'model__n_estimators': [100, 200],
-                'model__max_depth': [10, 20, None],
-                'model__min_samples_split': [2, 5]
+                'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
+                'param_grid': {
+                    'randomforestclassifier__n_estimators': [100, 200],
+                    'randomforestclassifier__max_depth': [10, 20, None],
+                    'randomforestclassifier__min_samples_split': [2, 5]
+                }
             },
             'GradientBoosting': {
-                'model__n_estimators': [100, 200],
-                'model__learning_rate': [0.05, 0.1],
-                'model__max_depth': [3, 5]
+                'model': GradientBoostingClassifier(random_state=42),
+                'param_grid': {
+                    'gradientboostingclassifier__n_estimators': [100, 200],
+                    'gradientboostingclassifier__learning_rate': [0.05, 0.1],
+                    'gradientboostingclassifier__max_depth': [3, 5]
+                }
             },
             'SVM': {
-                'model__C': [0.1, 1, 10],
-                'model__kernel': ['linear', 'rbf']
+                'model': SVC(probability=True, random_state=42, class_weight='balanced'),
+                'param_grid': {
+                    'svc__C': [0.1, 1, 10],
+                    'svc__kernel': ['linear', 'rbf'],
+                    'svc__gamma': ['scale', 'auto']
+                }
             },
             'Bagging': {
-                'model__n_estimators': [10, 20],
-                'model__max_samples': [0.5, 0.8, 1.0],
-                'model__max_features': [0.5, 0.8, 1.0]
+                'model': BaggingClassifier(random_state=42),
+                'param_grid': {
+                    'baggingclassifier__n_estimators': [10, 20],
+                    'baggingclassifier__max_samples': [0.5, 0.8, 1.0],
+                    'baggingclassifier__max_features': [0.5, 0.8, 1.0]
+                }
+            },
+            'KNN': {
+                'model': KNeighborsClassifier(),
+                'param_grid': {
+                    'kneighborsclassifier__n_neighbors': [3, 5, 7, 9],
+                    'kneighborsclassifier__weights': ['uniform', 'distance'],
+                    'kneighborsclassifier__p': [1, 2]
+                }
             }
         }
-        
-        # Create pipelines
-        for name, model in models.items():
-            if use_smote:
-                # Pipeline with SMOTE for handling class imbalance
-                pipeline = make_imb_pipeline(
-                    SMOTE(random_state=42),
-                    model
-                )
-            else:
-                pipeline = Pipeline([('model', model)])
-                
-            self.models[name] = {
-                'pipeline': pipeline,
-                'param_grid': param_grids.get(name, {})
-            }
     
-    def train_models(self, X_train, y_train, cv=3, n_jobs=-1):
-        """Train all models with hyperparameter tuning"""
+    def create_pipeline(self, model, use_smote=True, scale_features=False):
+        """Create a pipeline with optional SMOTE and feature scaling"""
+        steps = []
         
-        print("Training models with hyperparameter tuning...")
-        
-        for name, model_info in self.models.items():
-            print(f"\nTraining {name}...")
+        if scale_features:
+            steps.append(('scaler', StandardScaler()))
             
-            # Perform grid search
-            grid_search = GridSearchCV(
-                estimator=model_info['pipeline'],
-                param_grid=model_info['param_grid'],
+        if use_smote:
+            steps.append(('smote', SMOTE(random_state=42)))
+            
+        # Add the model with its name in lowercase
+        model_name = type(model).__name__.lower()
+        steps.append((model_name, model))
+        
+        return Pipeline(steps)
+    
+    def train_model(self, model_name, X_train, y_train, X_val, y_val, 
+                   use_smote=True, scale_features=False, cv=3, n_jobs=-1, 
+                   search_method='grid'):
+        """Train and evaluate a single model"""
+        
+        available_models = self.get_available_models()
+        
+        print(f"Training {model_name}...")
+        
+        # Get model and parameter grid
+        model_info = available_models[model_name]
+        model = model_info['model']
+        param_grid = model_info['param_grid']
+        
+        # Create pipeline
+        pipeline = self.create_pipeline(model, use_smote, scale_features)
+        
+        # Choose search method
+        if search_method == 'grid':
+            search = GridSearchCV(
+                estimator=pipeline,
+                param_grid=param_grid,
                 cv=cv,
                 scoring='roc_auc',
                 n_jobs=n_jobs,
                 verbose=1
             )
-            
-            grid_search.fit(X_train, y_train)
-            
-            # Store results
-            self.models[name]['best_estimator'] = grid_search.best_estimator_
-            self.models[name]['best_params'] = grid_search.best_params_
-            self.models[name]['best_score'] = grid_search.best_score_
-            
-            print(f"Best parameters: {grid_search.best_params_}")
-            print(f"Best CV AUC: {grid_search.best_score_:.4f}")
-    
-    def evaluate_models(self, X_val, y_val):
-        """Evaluate all models on validation set"""
+        else:
+            search = RandomizedSearchCV(
+                estimator=pipeline,
+                param_distributions=param_grid,
+                n_iter=10,  # Number of parameter settings sampled
+                cv=cv,
+                scoring='roc_auc',
+                n_jobs=n_jobs,
+                verbose=1,
+                random_state=42
+            )
         
-        print("\nEvaluating models on validation set...")
+        # Train the model with hyperparameter tuning
+        search.fit(X_train, y_train)
         
-        for name, model_info in self.models.items():
-            # Predict probabilities
-            y_pred_proba = model_info['best_estimator'].predict_proba(X_val)[:, 1]
-            
-            # Calculate AUC
-            auc_score = roc_auc_score(y_val, y_pred_proba)
-            self.models[name]['val_auc'] = auc_score
-            
-            print(f"{name}: Validation AUC = {auc_score:.4f}")
-    
-    def select_best_model(self):
-        """Select the best performing model based on validation AUC"""
+        # Evaluate on validation set
+        y_val_pred_proba = search.best_estimator_.predict_proba(X_val)[:, 1]
+        val_auc = roc_auc_score(y_val, y_val_pred_proba)
         
-        best_auc = -1
-        for name, model_info in self.models.items():
-            if model_info['val_auc'] > best_auc:
-                best_auc = model_info['val_auc']
-                self.best_model = model_info['best_estimator']
-                self.best_model_name = name
-                
-        print(f"\nBest model: {self.best_model_name} with AUC: {best_auc:.4f}")
+        # Store results
+        self.models[model_name] = {
+            'best_estimator': search.best_estimator_,
+            'best_params': search.best_params_,
+            'cv_score': search.best_score_,
+            'val_score': val_auc,
+            'search': search
+        }
+        
+        print(f"Best parameters: {search.best_params_}")
+        print(f"CV AUC: {search.best_score_:.4f}")
+        print(f"Validation AUC: {val_auc:.4f}")
+        
+        return search.best_estimator_
     
-    def feature_importance(self, feature_names):
+    def feature_importance(self, model_name, top_n=15):
         """Display feature importance for tree-based models"""
         
-        if hasattr(self.best_model.steps[-1][-1], 'feature_importances_'):
+        pipeline = self.models[model_name]['best_estimator']
+        model = pipeline.steps[-1][1]  # Get the actual model from the pipeline
+        
+        if hasattr(model, 'feature_importances_'):
             # For tree-based models
-            importances = self.best_model.steps[-1][-1].feature_importances_
-            indices = np.argsort(importances)[::-1]
+            importances = model.feature_importances_
             
-            plt.figure(figsize=(12, 8))
-            plt.title("Feature Importances")
-            plt.bar(range(min(20, len(importances))), 
-                   importances[indices][:20],
-                   color="r", align="center")
-            plt.xticks(range(min(20, len(importances))), 
-                      [feature_names[i] for i in indices[:20]], rotation=90)
-            plt.xlim([-1, min(20, len(importances))])
-            plt.tight_layout()
-            plt.show()
+            if self.feature_names is None:
+                self.feature_names = [f"Feature {i}" for i in range(len(importances))]
             
             # Create feature importance dataframe
             feature_importance_df = pd.DataFrame({
-                'feature': feature_names,
+                'feature': self.feature_names,
                 'importance': importances
-            }).sort_values('importance', ascending=False)
+            }).sort_values('importance', ascending=False).head(top_n)
+            
+            plt.figure(figsize=(12, 8))
+            sns.barplot(x='importance', y='feature', data=feature_importance_df)
+            plt.title(f'Top {top_n} Feature Importances - {model_name}')
+            plt.tight_layout()
+            plt.show()
             
             return feature_importance_df
         
         else:
-            print("Feature importance is not available for this model type.")
+            print(f"Feature importance is not available for {model_name}.")
             return None
     
-    def final_training(self, X, y):
-        """Train the best model on the entire dataset"""
+    def save_model(self, model, path):
+        """Save a model to disk"""
         
-        print(f"\nTraining final {self.best_model_name} model on full dataset...")
-        self.final_model = self.best_model.fit(X, y)
-    
-    def predict(self, X):
-        """Make predictions using the final model"""
-        
-        return self.final_model.predict_proba(X)[:, 1]
-    
-    def save_model(self, path):
-        """Save the final model to disk"""
-        
-        joblib.dump(self.final_model, path)
+        joblib.dump(model, path)
         print(f"Model saved to: {path}")
     
     def load_model(self, path):
         """Load a saved model from disk"""
         
-        self.final_model = joblib.load(path)
+        model = joblib.load(path)
         print(f"Model loaded from: {path}")
+        return model
