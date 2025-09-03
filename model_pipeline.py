@@ -1,48 +1,87 @@
-import pandas as pd
+# model_pipeline.py
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, BaggingClassifier
+import pandas as pd
+from typing import Iterable, Tuple, Optional, Dict, Any
+from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, BaggingClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import roc_auc_score
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 import joblib
 import warnings
+import math
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
 
 class CreditScoringPipeline:
-    def __init__(self):
-        # Structure: { model_name: { 'smote': {...}, 'no_smote': {...} } }
-        self.models = {}
+    def __init__(
+        self,
+        random_state: int = 42,
+        default_search_method: str = "random",  # 'random' or 'grid'
+        default_cv: int = 3,
+        default_n_jobs: int = -1,
+        speed_mode: str = "balanced",  # 'fast' | 'balanced' | 'thorough'
+        run_both_smote_by_default: bool = False
+    ):
+        """
+        Pipeline with speed presets. Use speed_mode to control how wide searches are:
+          - fast:    very small search grids / n_iter (quick exploration)
+          - balanced: middle ground
+          - thorough: larger n_iter / full grids
+        """
+        self.models: Dict[str, Dict[str, Any]] = {}
         self.feature_names = None
+        self.random_state = random_state
+        self.default_search_method = default_search_method
+        self.default_cv = default_cv
+        self.default_n_jobs = default_n_jobs
+        self.speed_mode = speed_mode
+        self.run_both_smote_by_default = run_both_smote_by_default
 
-    def get_available_models(self):
-        """Return available models with their parameter grids."""
+        # default n_iter per model for RandomizedSearch (can be overridden per-call)
+        self.n_iter_defaults = {
+            'LogisticRegression': 12,
+            'RandomForest': 20,
+            'GradientBoosting': 20,
+            'HistGradientBoosting': 20,
+            'SVM': 12,
+            'Bagging': 12,
+            'KNN': 12
+        }
+
+    def get_available_models(self) -> Dict[str, Dict[str, Any]]:
+        """Return model instances + readable param grids (kept compact)."""
         return {
             'LogisticRegression': {
-                'model': LogisticRegression(random_state=42, class_weight='balanced', max_iter=5000),
+                'model': LogisticRegression(random_state=self.random_state, class_weight='balanced', max_iter=2000),
                 'param_grid': {
-                    'logisticregression__C': [0.1, 1, 10],
+                    'logisticregression__C': [0.01, 0.1, 1, 10],
                     'logisticregression__solver': ['liblinear', 'saga'],
                     'logisticregression__penalty': ['l1', 'l2']
                 }
             },
             'RandomForest': {
-                'model': RandomForestClassifier(random_state=42, class_weight='balanced'),
+                'model': RandomForestClassifier(random_state=self.random_state, class_weight='balanced', n_jobs=1),
                 'param_grid': {
                     'randomforestclassifier__n_estimators': [100, 200],
-                    'randomforestclassifier__max_depth': [10, 20, None],
+                    'randomforestclassifier__max_depth': [5, 10, 20, None],
                     'randomforestclassifier__min_samples_split': [2, 5]
                 }
             },
+            # faster alternative to classic GB: HistGradientBoosting (can be much faster for large data)
+            'HistGradientBoosting': {
+                'model': HistGradientBoostingClassifier(random_state=self.random_state),
+                'param_grid': {
+                    'histgradientboostingclassifier__max_iter': [100, 200],
+                    'histgradientboostingclassifier__max_depth': [3, 6, None],
+                    'histgradientboostingclassifier__learning_rate': [0.05, 0.1]
+                }
+            },
             'GradientBoosting': {
-                'model': GradientBoostingClassifier(random_state=42),
+                'model': GradientBoostingClassifier(random_state=self.random_state),
                 'param_grid': {
                     'gradientboostingclassifier__n_estimators': [100, 200],
                     'gradientboostingclassifier__learning_rate': [0.05, 0.1],
@@ -50,7 +89,7 @@ class CreditScoringPipeline:
                 }
             },
             'SVM': {
-                'model': SVC(probability=True, random_state=42, class_weight='balanced'),
+                'model': SVC(probability=True, random_state=self.random_state, class_weight='balanced'),
                 'param_grid': {
                     'svc__C': [0.1, 1, 10],
                     'svc__kernel': ['linear', 'rbf'],
@@ -58,7 +97,7 @@ class CreditScoringPipeline:
                 }
             },
             'Bagging': {
-                'model': BaggingClassifier(random_state=42),
+                'model': BaggingClassifier(random_state=self.random_state),
                 'param_grid': {
                     'baggingclassifier__n_estimators': [10, 20],
                     'baggingclassifier__max_samples': [0.5, 0.8, 1.0],
@@ -75,124 +114,198 @@ class CreditScoringPipeline:
             }
         }
 
-    def create_pipeline(self, model, use_smote=True):
-        """Create an imbalanced-learn pipeline with optional SMOTE."""
+    def _shrink_param_grid(self, grid: Dict[str, Iterable], mode: str) -> Dict[str, Iterable]:
+        """Reduce parameter grid size according to speed mode."""
+        if mode == 'thorough':
+            return grid  # no shrinking
+        # define how many options to keep per mode
+        keep_map = {'fast': 1, 'balanced': 2}
+        keep = keep_map.get(mode, 2)
+        new_grid = {}
+        for k, v in grid.items():
+            if isinstance(v, (list, tuple, np.ndarray)):
+                # keep first `keep` unique values (or all if smaller)
+                vals = list(dict.fromkeys(v))  # preserve order, unique
+                new_grid[k] = vals[:max(1, min(len(vals), keep))]
+            else:
+                new_grid[k] = v
+        return new_grid
+
+    def create_pipeline(self, model, use_smote: bool = True):
         steps = []
         if use_smote:
-            steps.append(('smote', SMOTE(random_state=42)))
+            steps.append(('smote', SMOTE(random_state=self.random_state)))
         model_step_name = type(model).__name__.lower()
         steps.append((model_step_name, model))
         return ImbPipeline(steps)
 
-    def train_model(self, model_name, X_train, y_train,
-                    use_smote=True, cv=3, n_jobs=-1, search_method='grid'):
-        """Train and evaluate a single model on train set (CV only)."""
-        available_models = self.get_available_models()
+    def train_model(
+        self,
+        model_name: str,
+        X_train,
+        y_train,
+        run_modes: Tuple[str, ...] = None,  # ('no_smote',) or ('no_smote','smote')
+        sample_frac: float = 1.0,
+        cv: Optional[int] = None,
+        n_iter: Optional[int] = None,
+        n_jobs: Optional[int] = None,
+        search_method: Optional[str] = None,
+        random_state: Optional[int] = None
+    ):
+        """
+        Train one model (possibly multiple runs: no_smote / smote) using RandomizedSearchCV by default.
+        Only CV metrics are stored (search.best_score_). Does not compute train/val ROC.
+        """
+        if random_state is None:
+            random_state = self.random_state
+        if cv is None:
+            cv = self.default_cv
+        if n_jobs is None:
+            n_jobs = self.default_n_jobs
+        if search_method is None:
+            search_method = self.default_search_method
 
-        if model_name not in available_models:
-            raise KeyError(f"Model '{model_name}' is not available. Choose from: {list(available_models.keys())}")
+        available = self.get_available_models()
+        if model_name not in available:
+            raise KeyError(f"Model '{model_name}' not available. Choose from: {list(available.keys())}")
 
-        print(f"Training {model_name} (use_smote={use_smote})...")
+        if run_modes is None:
+            run_modes = ('smote', 'no_smote') if self.run_both_smote_by_default else ('no_smote',)
 
-        model_info = available_models[model_name]
-        model = model_info['model']
-        param_grid = model_info['param_grid']
+        model_info = available[model_name]
+        base_model = model_info['model']
+        original_grid = model_info.get('param_grid', {})
 
-        pipeline = self.create_pipeline(model, use_smote)
+        # choose n_iter
+        if n_iter is None:
+            n_iter = self.n_iter_defaults.get(model_name, 12)
+            # adjust according to speed_mode
+            if self.speed_mode == 'fast':
+                n_iter = max(4, math.ceil(n_iter / 3))
+            elif self.speed_mode == 'balanced':
+                n_iter = max(8, math.ceil(n_iter / 1.5))
+            else:  # thorough
+                n_iter = n_iter
 
-        if search_method == 'grid':
-            search = GridSearchCV(
-                estimator=pipeline,
-                param_grid=param_grid,
-                cv=cv,
-                scoring='roc_auc',
-                n_jobs=n_jobs,
-                verbose=1
-            )
+        # sample train if requested
+        if sample_frac is not None and (sample_frac <= 0 or sample_frac > 1):
+            raise ValueError("sample_frac must be in (0, 1]. Use 1.0 to use full train.")
+        if sample_frac < 1.0:
+            print(f"[INFO] Sampling train: frac={sample_frac}")
+            Xs = X_train.sample(frac=sample_frac, random_state=random_state)
+
+            if hasattr(y_train, 'loc'):
+                ys = y_train.loc[Xs.index]
+            else:
+                try:
+                    idx = Xs.index.to_numpy().astype(int)
+                    ys = y_train[idx]
+                except Exception:
+                    Xs = Xs.reset_index(drop=True)
+                    ys = np.asarray(y_train).reshape(-1)
+                    ys = ys[: len(Xs)]
+
+            Xs = Xs.reset_index(drop=True)
+            if hasattr(ys, 'reset_index'):
+                ys = ys.reset_index(drop=True)
+            else:
+                ys = np.asarray(ys)
         else:
-            search = RandomizedSearchCV(
-                estimator=pipeline,
-                param_distributions=param_grid,
-                n_iter=10,
-                cv=cv,
-                scoring='roc_auc',
-                n_jobs=n_jobs,
-                verbose=1,
-                random_state=42
-            )
+            Xs, ys = X_train, y_train
 
-        search.fit(X_train, y_train)
+        print(f"[INFO] Training model '{model_name}' | speed_mode={self.speed_mode} | search_method={search_method}")
+        for run_key in run_modes:
+            use_smote = (run_key == 'smote')
+            # shrink grid based on speed_mode
+            grid = self._shrink_param_grid(original_grid, self.speed_mode)
 
-        run_key = 'smote' if use_smote else 'no_smote'
-        if model_name not in self.models:
-            self.models[model_name] = {}
+            # if RandomizedSearchCV, param_distributions should be provided
+            if search_method == 'grid':
+                # grid search (careful: can be expensive)
+                searcher = GridSearchCV(
+                    estimator=self.create_pipeline(base_model, use_smote=use_smote),
+                    param_grid=grid,
+                    cv=cv,
+                    scoring='roc_auc',
+                    n_jobs=n_jobs,
+                    verbose=1
+                )
+            else:
+                # randomized search: if grid contains single-value lists, RandomizedSearchCV still works
+                searcher = RandomizedSearchCV(
+                    estimator=self.create_pipeline(base_model, use_smote=use_smote),
+                    param_distributions=grid,
+                    n_iter=n_iter,
+                    cv=cv,
+                    scoring='roc_auc',
+                    n_jobs=n_jobs,
+                    verbose=1,
+                    random_state=random_state
+                )
 
-        self.models[model_name][run_key] = {
-            'best_estimator': search.best_estimator_,
-            'best_params': search.best_params_,
-            'cv_score': search.best_score_,
-            'search': search,
-            'metadata': {
-                'use_smote': use_smote
+            print(f"[RUN] {model_name} / {run_key} | n_iter={n_iter} | cv={cv} | use_smote={use_smote}")
+            searcher.fit(Xs, ys)
+
+            # store results (only CV metrics and best_estimator/best_params)
+            if model_name not in self.models:
+                self.models[model_name] = {}
+
+            self.models[model_name][run_key] = {
+                'best_estimator': searcher.best_estimator_,
+                'best_params': searcher.best_params_,
+                'cv_score': searcher.best_score_,
+                'search': searcher,
+                'metadata': {
+                    'use_smote': use_smote,
+                    'sample_frac': sample_frac,
+                    'speed_mode': self.speed_mode
+                }
             }
-        }
 
-        print(f"Best parameters: {search.best_params_}")
-        print(f"CV AUC: {search.best_score_:.4f}")
+            print(f"[DONE] {model_name}/{run_key} | CV AUC={searcher.best_score_:.4f} | best_params={searcher.best_params_}")
 
-        return search.best_estimator_
+        return self.models[model_name]
 
-    def feature_importance(self, model_name, use_smote: bool | None = None, top_n=15):
-        """Display feature importance for tree-based models."""
-        if model_name not in self.models:
-            raise KeyError(f"No trained runs found for model '{model_name}'.")
+    def train_all(
+        self,
+        X_train,
+        y_train,
+        model_names: Optional[Iterable[str]] = None,
+        run_modes: Tuple[str, ...] = None,
+        sample_frac: float = 1.0,
+        cv: Optional[int] = None,
+        n_jobs: Optional[int] = None,
+        search_method: Optional[str] = None
+    ):
+        """Train multiple models sequentially. Returns dict of results."""
+        available = list(self.get_available_models().keys())
+        if model_names is None:
+            model_names = available
+        results = {}
+        for mn in model_names:
+            res = self.train_model(
+                model_name=mn,
+                X_train=X_train,
+                y_train=y_train,
+                run_modes=run_modes,
+                sample_frac=sample_frac,
+                cv=cv,
+                n_jobs=n_jobs,
+                search_method=search_method
+            )
+            results[mn] = res
+        return results
 
-        runs = self.models[model_name]
-        if use_smote is not None:
-            chosen_key = 'smote' if use_smote else 'no_smote'
-        else:
-            chosen_key = list(runs.keys())[0]
-
-        pipeline = runs[chosen_key]['best_estimator']
-        model = pipeline.steps[-1][1]
-
-        if hasattr(model, 'feature_importances_'):
-            importances = model.feature_importances_
-            if self.feature_names is None:
-                self.feature_names = [f"Feature {i}" for i in range(len(importances))]
-
-            feature_importance_df = pd.DataFrame({
-                'feature': self.feature_names,
-                'importance': importances
-            }).sort_values('importance', ascending=False).head(top_n)
-
-            plt.figure(figsize=(12, 8))
-            sns.barplot(x='importance', y='feature', data=feature_importance_df)
-            plt.title(f'Top {top_n} Feature Importances - {model_name} ({chosen_key})')
-            plt.tight_layout()
-            plt.show()
-
-            return feature_importance_df
-        else:
-            print(f"Feature importance is not available for {model_name} ({chosen_key}).")
-            return None
-
-    def save_model(self, model, path):
-        """Save a model object to disk."""
-        joblib.dump(model, path)
-        print(f"Model saved to: {path}")
-
-    def save_trained_model(self, model_name, path, use_smote=True):
-        """Save a stored trained model by model name and smote flag."""
+    def save_trained_model(self, model_name: str, path: str, use_smote: bool = True):
+        """Save stored trained estimator to disk."""
         run_key = 'smote' if use_smote else 'no_smote'
         if model_name not in self.models or run_key not in self.models[model_name]:
             raise KeyError(f"No stored model for {model_name} with run '{run_key}'.")
-        model_obj = self.models[model_name][run_key]['best_estimator']
-        joblib.dump(model_obj, path)
-        print(f"Stored model '{model_name}/{run_key}' saved to: {path}")
+        estimator = self.models[model_name][run_key]['best_estimator']
+        joblib.dump(estimator, path)
+        print(f"Saved: {path}")
 
-    def load_model(self, path):
-        """Load a saved model from disk."""
+    def load_model(self, path: str):
         model = joblib.load(path)
-        print(f"Model loaded from: {path}")
+        print(f"Loaded: {path}")
         return model
