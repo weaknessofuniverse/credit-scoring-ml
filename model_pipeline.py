@@ -1,11 +1,10 @@
-# model_pipeline.py
 import numpy as np
 import pandas as pd
 from typing import Iterable, Tuple, Optional, Dict, Any
 from sklearn.model_selection import RandomizedSearchCV, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, BaggingClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
@@ -71,7 +70,6 @@ class CreditScoringPipeline:
                     'randomforestclassifier__min_samples_split': [2, 5]
                 }
             },
-            # faster alternative to classic GB: HistGradientBoosting (can be much faster for large data)
             'HistGradientBoosting': {
                 'model': HistGradientBoostingClassifier(random_state=self.random_state),
                 'param_grid': {
@@ -89,11 +87,11 @@ class CreditScoringPipeline:
                 }
             },
             'SVM': {
-                'model': SVC(probability=True, random_state=self.random_state, class_weight='balanced'),
+                # use LinearSVC (much faster than kernel SVC on large datasets)
+                'model': LinearSVC(random_state=self.random_state, class_weight='balanced', max_iter=5000, dual=False),
                 'param_grid': {
-                    'svc__C': [0.1, 1, 10],
-                    'svc__kernel': ['linear', 'rbf'],
-                    'svc__gamma': ['scale', 'auto']
+                    'linearsvc__C': [0.01, 0.1, 1, 10],
+                    # LinearSVC does not produce predict_proba, but decision_function works for AUC
                 }
             },
             'Bagging': {

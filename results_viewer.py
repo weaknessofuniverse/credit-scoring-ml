@@ -1,4 +1,3 @@
-# results_viewer.py
 import os
 from typing import Tuple, Dict, Any, Optional
 import pandas as pd
