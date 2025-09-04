@@ -44,8 +44,8 @@ Gradient Boosting models performed best, with **SMOTE surprisingly reducing perf
 
 | Model | CV AUC (no SMOTE) | Kaggle AUC (Private) |
 | :--- | :--- | :--- |
-| HistGradientBoosting | **0.8722** | **0.85964** |
-| GradientBoosting | 0.8715 | 0.85944 |
+| HistGradientBoosting | **0.8722** | **0.86387** |
+| GradientBoosting | 0.8715 | 0.86500 |
 
 ## 🚀 How to Run
 
