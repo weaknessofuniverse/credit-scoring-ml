@@ -7,26 +7,26 @@ This repository contains a machine learning pipeline for the ["Give Me Some Cred
 *   **Task:** Binary classification (imbalanced classes)
 *   **Top Models:** Gradient Boosting & HistGradientBoosting
 *   **Best CV AUC:** ~0.872
-*   **Best Kaggle Score:** 0.85964 (Private)
+*   **Best Kaggle Score:** 0.86500 (Private)
 
-## 🏗️ Project Architecture
+## 📁 Project Structure
 
-The project is structured as a sequential data science pipeline:
-
+```bash
 credit-scoring-ml/
-├─ notebooks/                          # interactive EDA and experiments
-│  ├─ 01_EDA.ipynb/                    # Exploratory Data Analysis
+├─ notebooks/                          # Interactive EDA and experiments
+│  ├─ 01_EDA.ipynb                     # Exploratory Data Analysis
 │  ├─ 02_Preprocessing.ipynb           # Data cleaning, feature engineering, imputation
 │  └─ 03_Modeling.ipynb                # Model training, selection, and prediction
 ├─ data/
-│  ├─ raw/                    # raw files
-│  └─ processed/              # outputs from preprocessing
+│  ├─ raw/                             # Raw CSV files from Kaggle
+│  └─ processed/                       # Cleaned datasets & scalers
 ├─ src/
-│  ├─ model_pipeline.py/
-│  └─ results_viewer.py/
-├─ Article.pdf
-├─ requirements.txt
-└─ README.md
+│  ├─ model_pipeline.py                # Custom training pipeline class
+│  └─ results_viewer.py                # Utilities for visualizing results
+├─ Article.pdf                         # Detailed project report (LaTeX)
+├─ requirements.txt                    # Python dependencies
+└─ README.md                           # This file
+```
 
 
 ## 📋 Key Steps
