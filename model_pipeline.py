@@ -40,7 +40,6 @@ class CreditScoringPipeline:
         self.speed_mode = speed_mode
         self.run_both_smote_by_default = run_both_smote_by_default
 
-        # default n_iter per model for RandomizedSearch (can be overridden per-call)
         self.n_iter_defaults = {
             'LogisticRegression': 12,
             'RandomForest': 20,
@@ -87,11 +86,9 @@ class CreditScoringPipeline:
                 }
             },
             'SVM': {
-                # use LinearSVC (much faster than kernel SVC on large datasets)
                 'model': LinearSVC(random_state=self.random_state, class_weight='balanced', max_iter=5000, dual=False),
                 'param_grid': {
                     'linearsvc__C': [0.01, 0.1, 1, 10],
-                    # LinearSVC does not produce predict_proba, but decision_function works for AUC
                 }
             },
             'Bagging': {
@@ -115,15 +112,13 @@ class CreditScoringPipeline:
     def _shrink_param_grid(self, grid: Dict[str, Iterable], mode: str) -> Dict[str, Iterable]:
         """Reduce parameter grid size according to speed mode."""
         if mode == 'thorough':
-            return grid  # no shrinking
-        # define how many options to keep per mode
+            return grid
         keep_map = {'fast': 1, 'balanced': 2}
         keep = keep_map.get(mode, 2)
         new_grid = {}
         for k, v in grid.items():
             if isinstance(v, (list, tuple, np.ndarray)):
-                # keep first `keep` unique values (or all if smaller)
-                vals = list(dict.fromkeys(v))  # preserve order, unique
+                vals = list(dict.fromkeys(v))
                 new_grid[k] = vals[:max(1, min(len(vals), keep))]
             else:
                 new_grid[k] = v
